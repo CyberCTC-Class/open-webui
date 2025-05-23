@@ -5,6 +5,7 @@ from open_webui.utils.misc import (
     openai_chat_completion_message_template,
 )
 
+current_requests = []
 
 def convert_ollama_tool_call_to_openai(tool_calls: dict) -> dict:
     openai_tool_calls = []
@@ -103,25 +104,38 @@ async def convert_streaming_response_ollama_to_openai(ollama_streaming_response)
     async for data in ollama_streaming_response.body_iterator:
         data = json.loads(data)
 
-        model = data.get("model", "ollama")
-        message_content = data.get("message", {}).get("content", None)
-        tool_calls = data.get("message", {}).get("tool_calls", None)
-        openai_tool_calls = None
-
-        if tool_calls:
-            openai_tool_calls = convert_ollama_tool_call_to_openai(tool_calls)
-
         done = data.get("done", False)
-
-        usage = None
+        message_id = data.get("message_id", None)
+        # If the message is done generating, remove it from queue and process the next one
         if done:
-            usage = convert_ollama_usage_to_openai(data)
+            current_requests.remove(message_id)
+            yield "data: [DONE]\n\n"
+            break
+        else:
+            current_requests.append(message_id)
 
-        data = openai_chat_chunk_message_template(
-            model, message_content, openai_tool_calls, usage
-        )
+        # If the current message request is equal to the oldest request, work on it
+        if message_id == current_requests[0]:
 
-        line = f"data: {json.dumps(data)}\n\n"
-        yield line
+            model = data.get("model", "ollama")
+            message_content = data.get("message", {}).get("content", None)
+            tool_calls = data.get("message", {}).get("tool_calls", None)
+            openai_tool_calls = None
+
+            if tool_calls:
+                openai_tool_calls = convert_ollama_tool_call_to_openai(tool_calls)
+
+            done = data.get("done", False)
+
+            usage = None
+            if done:
+                usage = convert_ollama_usage_to_openai(data)
+
+            data = openai_chat_chunk_message_template(
+                model, message_content, openai_tool_calls, usage
+            )
+
+            line = f"data: {json.dumps(data)}\n\n"
+            yield line
 
     yield "data: [DONE]\n\n"
